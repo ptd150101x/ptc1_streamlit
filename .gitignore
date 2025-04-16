@@ -1,0 +1,6 @@
+# Start Generation Here
+services\chatbot\gemini_api_keys.py
+# End Generation Here
+venv
+__pycache__
+.env

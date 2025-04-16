@@ -1,0 +1,14 @@
+LANGFUSE_SECRET_KEY=xxxxxxxxxxx
+LANGFUSE_PUBLIC_KEY=xxxxxxxxxxx
+
+LANGFUSE_HOST=https://cloud.langfuse.com
+
+POSTGRES_USER=xxxxxxxxxxx
+POSTGRES_PASSWORD=xxxxxxxxxxx
+POSTGRES_HOST=xxxxxxxxxxx
+POSTGRES_PORT=xxxxxxxxxxx
+POSTGRES_DB=xxxxxxxxxxx
+
+
+
+

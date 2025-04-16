@@ -1,0 +1,114 @@
+services:
+  # 1. Database service using huanidz/pgvector_pgsearch
+  db:
+    image: huanidz/pgvector_pgsearch:latest
+    container_name: postgres_db_chatbot
+    environment:
+      - POSTGRES_PASSWORD=abc
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # 2. Redis service
+  redis:
+    image: redis:alpine
+    container_name: redis_chatbot
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - app-network
+    command: redis-server --requirepass 123456 --appendonly yes
+
+  # 3. Embedding & Reranking service
+  embed_rerank:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: embed_rerank_chatbot
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - .:/app
+      - model_cache:/root/.cache/huggingface
+    working_dir: /app
+    command: python services/rerank_embedding/embedding_reranker.py
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # 4. Backend service
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: BE_chatbot
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: ./sh_script/start_backend.sh
+    ports:
+      - "8000:8000"
+    networks:
+      - app-network
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - embed_rerank
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=123456
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=abc
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=chatbot
+
+  # 5. Frontend service
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: FE_chatbot
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: ./sh_script/start_frontend.sh
+    ports:
+      - "8501:8501"
+    environment:
+      - API_URL=http://backend:8000
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=123456
+    networks:
+      - app-network
+    depends_on:
+      - backend
+      - redis
+
+# Định nghĩa volumes
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  model_cache:  # Add this volume
+    driver: local
+# Định nghĩa networks
+networks:
+  app-network:
+    driver: bridge

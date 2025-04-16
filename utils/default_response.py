@@ -1,0 +1,1 @@
+OVERLOAD_MESSAGE = "Hệ thống hiện đang quá tải, vui lòng thử lại sau ít phút"
