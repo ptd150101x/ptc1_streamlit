@@ -4,7 +4,7 @@ from typing import Optional, List, Dict
 
 class ChatMessageRole(str, Enum):
     USER = "user"
-    ASSISTANT = "model"
+    ASSISTANT = "assistant"
     SYSTEM = "system"
 
 

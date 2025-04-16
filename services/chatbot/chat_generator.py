@@ -39,6 +39,7 @@ class ChatGenerator:
         messages: List[ChatMessage],
         system_prompt: Optional[str],
         temperature: Optional[float],
+        
     ) -> str:
         pass
 
@@ -163,6 +164,15 @@ class GeminiChatGenerator(ChatGenerator):
         self.api_keys = api_keys
         self.model = model
 
+    def _convert_role(self, role: ChatMessageRole) -> str:
+        # Chuyển đổi role từ format chuẩn sang format của Gemini
+        role_mapping = {
+            ChatMessageRole.USER: "user",
+            ChatMessageRole.ASSISTANT: "model",
+            ChatMessageRole.SYSTEM: "system"
+        }
+        return role_mapping[role]
+
     @observe(name="GeminiChatGenerator", as_type="generation")
     async def run(self,
                 messages: List[ChatMessage],
@@ -174,53 +184,77 @@ class GeminiChatGenerator(ChatGenerator):
                 ) -> AsyncGenerator[str, None]:
         current_key_index = 0
         gemini_api_key = self.api_keys[current_key_index]
-        generate_content_config = types.GenerateContentConfig(
-            temperature=temperature,
-            top_p=0.95,
-            top_k=40,
-            max_output_tokens=8192,
-            response_mime_type="application/json" if response_model else "text/plain",
-            response_schema=response_model,
-        )
+        if response_model:
+            generate_content_config = types.GenerateContentConfig(
+                temperature=temperature,
+                top_p=0.95,
+                top_k=40,
+                max_output_tokens=8192,
+                response_mime_type="application/json",
+                response_schema=response_model,
+                system_instruction=system_prompt,
+            )
+        else:
+            generate_content_config = types.GenerateContentConfig(
+                temperature=temperature,
+                top_p=0.95,
+                top_k=40,
+                max_output_tokens=8192,
+                response_mime_type="text/plain",
+                system_instruction=system_prompt,
+            )
         client = genai.Client(api_key=gemini_api_key)
         client_instructor = instructor.from_genai(
             client,
             mode=instructor.Mode.GENAI_STRUCTURED_OUTPUTS
         )
-        chat_history = [
-            types.Content(
-                role=message.role,
-                parts=[types.Part.from_text(text=message.content)],
-            ) for message in messages
-        ]
 
         for attempt in range(retries):
             try:
                 if response_model:
-                    # existing handling for structured output
-                    ...
+                    if streaming_partial_json:
+                        response = client_instructor.chat.completions.create_partial(
+                            model=self.model,
+                            messages=[
+                                {
+                                    "role": self._convert_role(message.role),
+                                    "content": message.content
+                                }
+                                for message in messages
+                            ],
+                            config=generate_content_config,
+                            response_model=response_model
+                        )
+                        for chunk in response:
+                            yield chunk
+                    else:
+                        response = client_instructor.chat.completions.create(
+                            model=self.model,
+                            messages=[
+                                {
+                                    "role": self._convert_role(message.role),
+                                    "content": message.content
+                                }
+                                for message in messages
+                            ],
+                            config=generate_content_config,
+                            response_model=response_model
+                        )
+                        yield response
                 else:
                     response = client.models.generate_content_stream(
                         model=self.model,
-                        contents=chat_history,
+                        contents=[
+                            types.Content(
+                                role=message.role,
+                                parts=[types.Part.from_text(text=message.content)],
+                            ) for message in messages
+                        ],
                         config=generate_content_config
                     )
 
                     for chunk in response:
-                        if not chunk.candidates:
-                            continue
-                        candidate = chunk.candidates[0]
-
-                        if not candidate.content.parts:
-                            continue
-
-                        part = candidate.content.parts[0]
-                        if part and hasattr(part, "text") and part.text:
-                            yield part.text
-
-                        # --- FIXED: break on finish_reason ---
-                        if getattr(candidate, "finish_reason", None) == "STOP":
-                            return
+                        yield chunk.text
 
             except Exception as e:
                 print(f"Lỗi khi gọi LLM với API key {gemini_api_key}, thử lại lần {attempt + 1}: {str(e)}")

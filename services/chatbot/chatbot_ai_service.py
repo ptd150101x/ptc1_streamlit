@@ -24,26 +24,26 @@ class AI_Chatbot_Service:
                 thinking: bool = False
                 ):
         self.thinking = thinking
-        gemini_generator = GeminiGenerator(
+        self.gemini_generator = GeminiGenerator(
             api_keys=GEMINI_API_KEYS,
             model=model if model != "gemini-2.0-flash-thinking-exp-01-21" else "gemini-2.0-flash-lite"
         )
-        gemini_chat_generator = GeminiChatGenerator(
+        self.gemini_chat_generator = GeminiChatGenerator(
             api_keys=GEMINI_API_KEYS,
             model=model
         )
         self.detect_language = DetectLanguage(
-            generator=gemini_generator
+            generator=self.gemini_generator
         )
         self.document_retriever = DocumentRetriever(session=next(get_db()))
         self.single_query = SingleQuery(
-            generator=gemini_generator
+            generator=self.gemini_generator
         )
         self.answer_generator = AnswerGenerator(
-            chat_generator=gemini_chat_generator
+            chat_generator=self.gemini_chat_generator
         )
         self.extract_references = ExtractReferences(
-            generator=gemini_generator
+            generator=self.gemini_generator
         )
 
 

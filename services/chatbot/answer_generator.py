@@ -177,7 +177,6 @@ class AnswerGenerator:
     ) -> None:
         self.chat_generator = chat_generator
 
-
     def run(self,
             messages: List[ChatMessage],
             relevant_documents: List[dict],

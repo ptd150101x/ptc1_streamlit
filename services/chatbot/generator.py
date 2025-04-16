@@ -3,6 +3,7 @@ from openai import OpenAI
 from openai import AsyncOpenAI
 from langfuse.decorators import observe
 import instructor
+from schemas.api_schema import ChatMessage, ChatMessageRole
 import vertexai
 from vertexai.generative_models import GenerativeModel
 import vertexai.generative_models as generative_models
@@ -195,27 +196,49 @@ class GeminiGenerator(Generator):
         self.api_keys = api_keys
         self.model = model
 
+    def _convert_role(self, role: ChatMessageRole) -> str:
+        # Chuyển đổi role từ format chuẩn sang format của Gemini
+        role_mapping = {
+            ChatMessageRole.USER: "user",
+            ChatMessageRole.ASSISTANT: "model",
+            ChatMessageRole.SYSTEM: "system"
+        }
+        return role_mapping[role]
+
     @observe(name="GeminiGenerator", as_type="generation")
     async def run(
         self,
         prompt: str,
+        messages: Optional[List[ChatMessage]] = None,
+        system_prompt: Optional[str] = None,
         temperature: Optional[float] = 0.5,
         response_model: Optional[str] = None,
         retries: int = 5,
     ) -> str:
         
-        
         current_key_index = 0
-        generate_content_config = types.GenerateContentConfig(
-            temperature= temperature,
-            top_p=0.95,
-            top_k=40,
-            max_output_tokens=8192,
-            response_mime_type="application/json",
-            response_schema=response_model,
-        )
-
         gemini_api_key = self.api_keys[current_key_index]
+        
+        if response_model:
+            generate_content_config = types.GenerateContentConfig(
+                temperature= temperature,
+                top_p=0.95,
+                top_k=40,
+                max_output_tokens=8192,
+                response_mime_type="application/json",
+                response_schema=response_model,
+                system_instruction=system_prompt,
+            )
+        else:
+            generate_content_config = types.GenerateContentConfig(
+                temperature=temperature,
+                top_p=0.95,
+                top_k=40,
+                max_output_tokens=8192,
+                response_mime_type="text/plain",
+                system_instruction=system_prompt,
+            )
+
         client = genai.Client(api_key=gemini_api_key)
         client_instructor = instructor.from_genai(
             client,
@@ -224,21 +247,55 @@ class GeminiGenerator(Generator):
         
         for attempt in range(retries):
             try:
-                if response_model:
-                    response = client_instructor.chat.completions.create(
-                        model=self.model,
-                        messages=[{"role": "user", "content": prompt}],
-                        config=generate_content_config,
-                        response_model=response_model,
-                    )
-                    return response
+                if messages:
+                    if response_model:
+                        response = client_instructor.chat.completions.create(
+                            model=self.model,
+                            messages=[
+                                {
+                                    "role": message.role,
+                                    "content": message.content
+                                }
+                                for message in messages.append({"role": "user", "content": prompt})
+                            ],
+                            config=generate_content_config,
+                            response_model=response_model,
+                        )
+                        return response
+                    else:
+                        response = client.models.generate_content(
+                            model=self.model,
+                            contents=[
+                                types.Content(
+                                    role=message.role,
+                                    parts=[types.Part.from_text(text=message.content)]
+                                )
+                                for message in messages.append({"role": "user", "content": prompt})
+                            ],
+                            config=generate_content_config
+                        )
+                        return response.text
                 else:
-                    response = client.models.generate_content(
-                        model=self.model,
-                        contents=prompt,
-                        config=generate_content_config
-                    )
-                    return response.text
+                    if response_model:
+                        response = client_instructor.chat.completions.create(
+                            model=self.model,
+                            messages=[{"role": "user", "content": prompt}],
+                            config=generate_content_config,
+                            response_model=response_model,
+                        )
+                        return response
+                    else:
+                        response = client.models.generate_content(
+                            model=self.model,
+                            contents=[
+                                types.Content(
+                                    role="user",
+                                    parts=[types.Part.from_text(text=prompt)]
+                                )
+                            ],
+                            config=generate_content_config
+                        )
+                        return response.text
             except Exception as e:
                 print(f"Lỗi khi gọi LLM với API key {gemini_api_key}, thử lại lần {attempt + 1}: {str(e)}")
                 # Nếu đã thử tất cả các API key, ném lỗi

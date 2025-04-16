@@ -1,8 +1,8 @@
+import asyncio
 import sys
 import os
-
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+from schemas.api_schema import ChatLogicInputData
 import streamlit as st
 import requests
 import base64
@@ -13,6 +13,10 @@ import time
 import uuid
 from utils.monitor_log import logger
 from api_url import API_URL
+from services.chatbot.chatbot_ai_service import AI_Chatbot_Service
+
+
+
 
 
 # Kết nối Redis
@@ -238,10 +242,10 @@ with col2:
     st.session_state.selected_model = st.selectbox(
         "Chọn model",
         ["gemini-2.0-flash-lite",
-         "gemini-2.0-flash",
-         "gemini-2.0-flash-thinking-exp-01-21",
-         "gemini-1.5-pro",
-         "gemini-1.5-flash",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-thinking-exp-01-21",
+        "gemini-1.5-pro",
+        "gemini-1.5-flash",
         ],
         index=0,
         help="Chọn model AI để xử lý câu hỏi của bạn"
@@ -265,53 +269,70 @@ if prompt := st.chat_input("Nhập câu hỏi của bạn..."):
     with st.chat_message("user"):
         st.write(prompt)
 
-    try:
-        # Thêm tin nhắn người dùng vào danh sách current_messages trước
-        current_messages.append(user_message)
+    ai_chatbot_service = AI_Chatbot_Service(
+        model=st.session_state.selected_model,
+        thinking=True if "think" in st.session_state.selected_model else False
+    )
+
+    language = asyncio.run(ai_chatbot_service.detect_language.run(prompt))
+
+    if language == "Unknown":
+        language = "Tiếng Việt"
         
-        # Tạo body cho yêu cầu API
-        api_request_body = {
-            "content": prompt,
-            "histories": [
+        
+    rewrite_prompt = asyncio.run(ai_chatbot_service.single_query.run(
+        messages=[
+            {"role": "model", "content": message["content"]} if message["role"] == "assistant" else message
+            for message in current_messages[-10:-1]
+        ],
+        question=prompt,
+        summary_history="",
+        thinking=True if "think" in st.session_state.selected_model else False
+        )
+    )
+    
+    relevant_documents = []
+    seen_ids = set()
+    documents = ai_chatbot_service.document_retriever.run(
+        query_text=rewrite_prompt,
+        threshold=0.2,
+        category=st.session_state.category
+    )
+    for doc in documents['final_rerank']:
+        if doc['id'] not in seen_ids:
+            relevant_documents.append(doc)
+            seen_ids.add(doc['id'])
+    
+    if not relevant_documents:
+        documents = ai_chatbot_service.document_retriever.run(
+            query_text=prompt,
+            threshold=0.2,
+            category=st.session_state.category
+        )
+        for doc in documents['final_rerank']:
+            if doc['id'] not in seen_ids:
+                relevant_documents.append(doc)
+                seen_ids.add(doc['id'])
+    
+    relevant_documents = sorted(relevant_documents, key=lambda doc: doc['cross_score'], reverse=False) if relevant_documents else []
+    
+    for chunk in asyncio.run(ai_chatbot_service.answer_generator.run(
+        messages=[
                 {"role": "model", "content": message["content"]} if message["role"] == "assistant" else message
                 for message in current_messages
             ],
-            "category": st.session_state.category,
-            "model": st.session_state.selected_model,
-            "thinking": True if "think" in st.session_state.selected_model else False
-        }
-
-
-
-
-        response = requests.post(
-            f"{API_URL}/chat",
-            json=api_request_body,
-            headers={"Content-Type": "application/json"},
-            stream=True
-        )
-
-        if response.status_code != 200:
-            st.error(f"Lỗi API: {response.status_code}")
-            st.stop()
-
+        relevant_documents=relevant_documents,
+        summary_history="",
+        original_query=prompt,
+        language=language,
+        thinking=True if "think" in st.session_state.selected_model else False
+    )):
         with st.chat_message("assistant"):
-            def stream_generator():
-                from io import StringIO
-                buffer = StringIO()
-                with open("streamed_chunks_debug.txt", "w", encoding="utf-8") as debug_file:
-                    for line in response.iter_lines(decode_unicode=True):
-                        if not line:
-                            continue
-                        buffer.write(line + "\n\n")
-                        debug_file.write(line + "\n\n")  # ✅ Ghi chunk vào file
-                        yield line + "\n\n"
-
-                full_content = buffer.getvalue()
-                assistant_message = {"role": "assistant", "content": full_content}
-                add_message_to_thread(st.session_state.current_thread, assistant_message)
-
-            st.write_stream(stream_generator())
+            st.write_stream(chunk)
+    references = asyncio.run(ai_chatbot_service.extract_references.run(
+        relevant_documents=relevant_documents,
+        question=rewrite_prompt
+    ))
 
             # # Xử lý references sau khi đã hiển thị nội dung
             # references = requests.post(
@@ -332,6 +353,3 @@ if prompt := st.chat_input("Nhập câu hỏi của bạn..."):
             #                     st.markdown(f"- {ref['references']}: {ref['url']}")
             #                 else:
             #                     st.markdown(f"- {ref['references']}")
-
-    except Exception as e:
-        st.error(f"Error connecting to API: {str(e)}")

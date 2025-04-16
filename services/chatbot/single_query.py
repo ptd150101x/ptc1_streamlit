@@ -1,11 +1,8 @@
 import sys
 import os
-
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
 from langfuse.decorators import observe
-from schemas.api_schema import ChatLogicInputData
+from schemas.api_schema import ChatMessage
 from .generator import Generator
 from datetime import datetime
 import pytz
@@ -14,8 +11,7 @@ from pydantic import BaseModel, Field
 import traceback
 from utils.monitor_log import logger
 from utils.default_response import OVERLOAD_MESSAGE
-import json
-
+from typing import List
 
 # Đặt múi giờ thành múi giờ Việt Nam
 timezone = pytz.timezone('Asia/Ho_Chi_Minh')
@@ -72,20 +68,15 @@ USER's Standalone Prompt:
 ```
 Getfly CRM phiên bản web có hỗ trợ gì cho bộ phận tài chính không?
 ```
+"""
 
+prompt = """\
 # BỐI CẢNH TRÒ CHUYỆN:
 Tóm tắt lịch sử trò chuyện:
 ```
 <summary history>
 {summary_history}
 </summary_history>
-```
-
-Lịch sử trò chuyện:
-```
-<chat history>
-{chat_history}
-</chat history>
 ```
 
 Đầu vào của người dùng:
@@ -95,8 +86,6 @@ Lịch sử trò chuyện:
 </user's input>
 ```
 """
-
-
 
 
 class SingleQuery:
@@ -112,57 +101,50 @@ class SingleQuery:
 
    @observe(name="SingleQuery")
    async def run(self,
-                  user_data: ChatLogicInputData,
+                  messages: List[ChatMessage],
                   question: str,
-                  rewrite_prompt: str = "",
+                  summary_history: str,
                   thinking: bool = False
                   ) -> str:
-      if len(user_data.histories) < 11:
-         taken_messages = user_data.histories  # Lấy tất cả nếu ít hơn 5
-      else:
-         taken_messages = user_data.histories[-11:-1]
-
-      # Giả sử taken_messages là danh sách các tin nhắn trong chat history
-      chat_history: str = "\n".join(map(lambda message: f"{message.role.value if hasattr(message.role, 'value') else message.role}: {message.content}", taken_messages))
       current_time = datetime.now(timezone).strftime("%A, %Y-%m-%d %H:%M:%S")
-      summary_history: str = user_data.summary
 
       if thinking:
          for attempt in range(self.max_retries):
             try:
                response = await self.generator.run(
-                        prompt = system_prompt.format(
-                           current_time=current_time,
+                        prompt = prompt.format(
                            summary_history=summary_history,
-                           chat_history=chat_history, 
                            question=question,
-                           ),
+                        ),
+                        messages=messages,
+                        system_prompt = system_prompt.format(current_time=current_time),
                         temperature = 0.5,
                )
-               return result
+               return response
 
             except Exception as e:
                logger.warning(f"Lỗi khi gọi Enrichment (lần thử {attempt + 1}/{self.max_retries}): {str(e)}")
                logger.error(traceback.format_exc())
+               if attempt < self.max_retries - 1:
+                  await asyncio.sleep(self.retry_delay * (2 ** attempt))
+               else:
+                  logger.error("Đã hết số lần thử lại. Không thể tăng cường.")
+                  return OVERLOAD_MESSAGE
       else:
          for attempt in range(self.max_retries):
             try:
                response = await self.generator.run(
-                        prompt = system_prompt.format(
-                           current_time=current_time,
+                        prompt = prompt.format(
                            summary_history=summary_history,
-                           chat_history=chat_history, 
                            question=question,
-                           ),
+                        ),
+                        messages=messages,
+                        system_prompt = system_prompt.format(current_time=current_time),
                         temperature = 0.5,
                         response_model=RewritePrompt,
                )
                response_json = response.dict()
-               result = {
-                  "analysis": response_json.get("analysis", ""),
-                  "rewrite_prompt": response_json.get("rewrited_prompt", ""),
-               }
-               return result
+               return response_json.get("rewrited_prompt", "")
 
             except Exception as e:
                logger.warning(f"Lỗi khi gọi Enrichment (lần thử {attempt + 1}/{self.max_retries}): {str(e)}")
